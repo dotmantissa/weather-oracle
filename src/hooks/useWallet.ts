@@ -1,5 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { GENLAYER_STUDIO_CHAIN_ID, GENLAYER_STUDIO_NETWORK_PARAMS } from '../lib/config';
+import { BrowserProvider } from 'ethers';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  GENLAYER_STUDIO_CHAIN_ID,
+  GENLAYER_STUDIO_CHAIN_ID_HEX,
+  GENLAYER_STUDIO_NETWORK_PARAMS,
+} from '../lib/config';
 import type { WalletState } from '../lib/types';
 
 type EthereumProvider = {
@@ -7,6 +12,12 @@ type EthereumProvider = {
   on?: (event: string, listener: (...args: unknown[]) => void) => void;
   removeListener?: (event: string, listener: (...args: unknown[]) => void) => void;
 };
+
+declare global {
+  interface Window {
+    ethereum?: EthereumProvider;
+  }
+}
 
 const getProvider = (): EthereumProvider | null => window.ethereum ?? null;
 
@@ -19,6 +30,38 @@ export const useWallet = () => {
     isSwitchingNetwork: false,
     error: null,
   });
+
+  const chainChangedRef = useRef<((chainId: unknown) => void) | null>(null);
+  const accountsChangedRef = useRef<((accounts: unknown) => void) | null>(null);
+
+  const removeListeners = useCallback(() => {
+    const provider = getProvider();
+    if (!provider?.removeListener) {
+      return;
+    }
+
+    if (chainChangedRef.current) {
+      provider.removeListener('chainChanged', chainChangedRef.current);
+      chainChangedRef.current = null;
+    }
+
+    if (accountsChangedRef.current) {
+      provider.removeListener('accountsChanged', accountsChangedRef.current);
+      accountsChangedRef.current = null;
+    }
+  }, []);
+
+  const disconnectWallet = useCallback(() => {
+    removeListeners();
+    setState({
+      address: null,
+      isConnected: false,
+      chainId: null,
+      isCorrectNetwork: false,
+      isSwitchingNetwork: false,
+      error: null,
+    });
+  }, [removeListeners]);
 
   const hydrate = useCallback(async () => {
     const provider = getProvider();
@@ -39,13 +82,48 @@ export const useWallet = () => {
         address,
         isConnected: Boolean(address),
         chainId,
-        isCorrectNetwork: chainId?.toLowerCase() === GENLAYER_STUDIO_CHAIN_ID.toLowerCase(),
+        isCorrectNetwork: Number.parseInt(chainId, 16) === GENLAYER_STUDIO_CHAIN_ID,
         error: null,
       }));
     } catch (error) {
       setState((prev) => ({ ...prev, error: error instanceof Error ? error.message : 'Wallet state error.' }));
     }
   }, []);
+
+  const attachListeners = useCallback(() => {
+    const provider = getProvider();
+    if (!provider?.on) {
+      return;
+    }
+
+    const onChainChanged = (nextChainId: unknown) => {
+      const chainId = typeof nextChainId === 'string' ? nextChainId : null;
+      const isCorrect = chainId ? Number.parseInt(chainId, 16) === GENLAYER_STUDIO_CHAIN_ID : false;
+
+      if (!isCorrect) {
+        disconnectWallet();
+        setState((prev) => ({ ...prev, error: 'Please switch to GenLayer Studio network.' }));
+        return;
+      }
+
+      void hydrate();
+    };
+
+    const onAccountsChanged = (accountsRaw: unknown) => {
+      const accounts = Array.isArray(accountsRaw) ? (accountsRaw as string[]) : [];
+      if (accounts.length === 0) {
+        disconnectWallet();
+        return;
+      }
+      void hydrate();
+    };
+
+    removeListeners();
+    chainChangedRef.current = onChainChanged;
+    accountsChangedRef.current = onAccountsChanged;
+    provider.on('chainChanged', onChainChanged);
+    provider.on('accountsChanged', onAccountsChanged);
+  }, [disconnectWallet, hydrate, removeListeners]);
 
   const connectWallet = useCallback(async () => {
     const provider = getProvider();
@@ -56,30 +134,58 @@ export const useWallet = () => {
 
     try {
       const accounts = (await provider.request({ method: 'eth_requestAccounts' })) as string[];
-      const chainId = (await provider.request({ method: 'eth_chainId' })) as string;
       const address = accounts[0] ?? null;
+      if (!address) {
+        setState((prev) => ({ ...prev, error: 'No wallet account selected.' }));
+        return;
+      }
+
+      let chainId = (await provider.request({ method: 'eth_chainId' })) as string;
+      if (Number.parseInt(chainId, 16) !== GENLAYER_STUDIO_CHAIN_ID) {
+        try {
+          await provider.request({
+            method: 'wallet_switchEthereumChain',
+            params: [{ chainId: GENLAYER_STUDIO_CHAIN_ID_HEX }],
+          });
+        } catch (switchError) {
+          const err = switchError as { code?: number };
+          if (err.code === 4902) {
+            await provider.request({
+              method: 'wallet_addEthereumChain',
+              params: [GENLAYER_STUDIO_NETWORK_PARAMS],
+            });
+          } else {
+            setState((prev) => ({ ...prev, error: 'Switch to GenLayer Studio network to continue.' }));
+            return;
+          }
+        }
+        chainId = (await provider.request({ method: 'eth_chainId' })) as string;
+      }
+
+      const browserProvider = new BrowserProvider(provider);
+      const network = await browserProvider.getNetwork();
+      if (Number(network.chainId) !== GENLAYER_STUDIO_CHAIN_ID) {
+        disconnectWallet();
+        setState((prev) => ({ ...prev, error: 'Wrong network. GenLayer Studio required.' }));
+        return;
+      }
 
       setState((prev) => ({
         ...prev,
         address,
         chainId,
-        isConnected: Boolean(address),
-        isCorrectNetwork: chainId.toLowerCase() === GENLAYER_STUDIO_CHAIN_ID.toLowerCase(),
+        isConnected: true,
+        isCorrectNetwork: true,
         error: null,
       }));
-    } catch (error) {
-      setState((prev) => ({ ...prev, error: error instanceof Error ? error.message : 'Failed to connect wallet.' }));
-    }
-  }, []);
 
-  const disconnectWallet = useCallback(() => {
-    setState((prev) => ({
-      ...prev,
-      address: null,
-      isConnected: false,
-      error: null,
-    }));
-  }, []);
+      attachListeners();
+    } catch (error) {
+      const code = (error as { code?: number }).code;
+      const message = code === 4001 ? 'Wallet request rejected by user.' : error instanceof Error ? error.message : 'Failed to connect wallet.';
+      setState((prev) => ({ ...prev, error: message }));
+    }
+  }, [attachListeners, disconnectWallet]);
 
   const switchToStudioNetwork = useCallback(async () => {
     const provider = getProvider();
@@ -93,59 +199,31 @@ export const useWallet = () => {
     try {
       await provider.request({
         method: 'wallet_switchEthereumChain',
-        params: [{ chainId: GENLAYER_STUDIO_CHAIN_ID }],
+        params: [{ chainId: GENLAYER_STUDIO_CHAIN_ID_HEX }],
       });
+      await hydrate();
     } catch (switchError) {
-      const error = switchError as { code?: number };
-      if (error.code === 4902) {
+      const err = switchError as { code?: number };
+      if (err.code === 4902) {
         await provider.request({
           method: 'wallet_addEthereumChain',
           params: [GENLAYER_STUDIO_NETWORK_PARAMS],
         });
+        await hydrate();
       } else {
-        throw switchError;
+        setState((prev) => ({ ...prev, error: 'Unable to switch network automatically. Please switch manually in wallet.' }));
       }
     } finally {
-      const chainId = (await provider.request({ method: 'eth_chainId' })) as string;
-      setState((prev) => ({
-        ...prev,
-        chainId,
-        isCorrectNetwork: chainId.toLowerCase() === GENLAYER_STUDIO_CHAIN_ID.toLowerCase(),
-        isSwitchingNetwork: false,
-      }));
+      setState((prev) => ({ ...prev, isSwitchingNetwork: false }));
     }
-  }, []);
+  }, [hydrate]);
 
   useEffect(() => {
     void hydrate();
-    const provider = getProvider();
-    if (!provider?.on || !provider.removeListener) {
-      return;
-    }
-
-    const onAccountsChanged = (accounts: unknown) => {
-      const parsed = Array.isArray(accounts) ? (accounts as string[]) : [];
-      const address = parsed[0] ?? null;
-      setState((prev) => ({ ...prev, address, isConnected: Boolean(address) }));
-    };
-
-    const onChainChanged = (chainId: unknown) => {
-      const parsed = typeof chainId === 'string' ? chainId : null;
-      setState((prev) => ({
-        ...prev,
-        chainId: parsed,
-        isCorrectNetwork: parsed?.toLowerCase() === GENLAYER_STUDIO_CHAIN_ID.toLowerCase(),
-      }));
-    };
-
-    provider.on('accountsChanged', onAccountsChanged);
-    provider.on('chainChanged', onChainChanged);
-
     return () => {
-      provider.removeListener?.('accountsChanged', onAccountsChanged);
-      provider.removeListener?.('chainChanged', onChainChanged);
+      removeListeners();
     };
-  }, [hydrate]);
+  }, [hydrate, removeListeners]);
 
   return useMemo(
     () => ({

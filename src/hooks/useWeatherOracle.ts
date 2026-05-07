@@ -8,9 +8,10 @@ type UseWeatherOracleParams = {
   canInteract: boolean;
   isConnected: boolean;
   isCorrectNetwork: boolean;
+  address: string | null;
 };
 
-export const useWeatherOracle = ({ canInteract, isConnected, isCorrectNetwork }: UseWeatherOracleParams) => {
+export const useWeatherOracle = ({ canInteract, isConnected, isCorrectNetwork, address }: UseWeatherOracleParams) => {
   const [city, setCity] = useState<string>(() => localStorage.getItem(LAST_CITY_KEY) ?? '');
   const [temperature, setTemperature] = useState<number | null>(null);
   const [status, setStatus] = useState<WeatherStatus>('idle');
@@ -24,7 +25,7 @@ export const useWeatherOracle = ({ canInteract, isConnected, isCorrectNetwork }:
   const fetchWeather = useCallback(async () => {
     const normalizedCity = city.trim();
 
-    if (!isConnected) {
+    if (!isConnected || !address) {
       setStatus('error');
       setMessage('Connect wallet to continue.');
       return;
@@ -50,15 +51,20 @@ export const useWeatherOracle = ({ canInteract, isConnected, isCorrectNetwork }:
 
     try {
       setStatus('fetching');
-      setMessage('Submitting transaction and waiting for confirmation...');
+      setMessage('Submitting transaction and waiting for consensus...');
       setTemperature(null);
       setTxHash(null);
 
-      const { txHash: hash } = await callFetchTemp(normalizedCity);
-      setTxHash(hash);
-      setMessage('Transaction confirmed. Reading final temperature...');
+      const { txHash: hash } = await callFetchTemp(address, normalizedCity);
 
-      const value = await callGetLastTemp(normalizedCity);
+      if (!canInteract) {
+        throw new Error('Wallet/network changed during execution. Please reconnect and try again.');
+      }
+
+      setTxHash(hash);
+      setMessage('Transaction finalized. Reading final temperature...');
+
+      const value = await callGetLastTemp(address, normalizedCity);
       if (value === -999) {
         setStatus('error');
         setMessage('No valid weather data found for this city yet. Try again shortly.');
@@ -74,7 +80,7 @@ export const useWeatherOracle = ({ canInteract, isConnected, isCorrectNetwork }:
       setMessage(error instanceof Error ? error.message : 'Weather request failed.');
       setTemperature(null);
     }
-  }, [canInteract, city, isConnected, isCorrectNetwork]);
+  }, [address, canInteract, city, isConnected, isCorrectNetwork]);
 
   const resetStatus = useCallback(() => {
     setStatus('idle');

@@ -1,49 +1,61 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { callFetchTemp, callGetLastTemp } from './genlayerClient';
 
-const write = vi.fn();
-const read = vi.fn();
-const waitForTransaction = vi.fn();
+const writeContract = vi.fn();
+const waitForTransactionReceipt = vi.fn();
+const readContract = vi.fn();
 
 vi.mock('./config', () => ({
   WEATHER_ORACLE_ADDRESS: '0xabc123',
+  TX_POLL_INTERVAL: 10,
+  TX_POLL_RETRIES: 3,
+}));
+
+vi.mock('genlayer-js/chains', () => ({
+  studionet: { id: 61999 },
+}));
+
+vi.mock('genlayer-js/types', () => ({
+  TransactionStatus: { FINALIZED: 'FINALIZED' },
+}));
+
+vi.mock('genlayer-js', () => ({
+  createClient: vi.fn().mockImplementation(() => ({
+    writeContract,
+    waitForTransactionReceipt,
+    readContract,
+  })),
 }));
 
 describe('genlayerClient', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    (window as Window & { genlayer: unknown }).genlayer = {
-      sdk: {
-        createContract: vi.fn().mockReturnValue({ write, read }),
-        waitForTransaction,
-      },
-    };
   });
 
-  it('calls fetch_temp and waits for confirmation', async () => {
-    write.mockResolvedValue({ hash: '0xtx' });
-    waitForTransaction.mockResolvedValue(undefined);
+  it('calls fetch_temp and waits for finalized status', async () => {
+    writeContract.mockResolvedValue('0xtx');
+    waitForTransactionReceipt.mockResolvedValue({ status: 'FINALIZED' });
 
-    const result = await callFetchTemp('Lagos');
+    const result = await callFetchTemp('0xuser', 'Lagos');
 
-    expect(write).toHaveBeenCalledWith('fetch_temp', ['Lagos']);
-    expect(waitForTransaction).toHaveBeenCalledWith('0xtx');
+    expect(writeContract).toHaveBeenCalled();
+    expect(waitForTransactionReceipt).toHaveBeenCalled();
     expect(result).toEqual({ txHash: '0xtx' });
   });
 
-  it('retries get_last_temp after failure', async () => {
-    read.mockRejectedValueOnce(new Error('temporary'));
-    read.mockResolvedValueOnce(22);
+  it('throws clear error when receipt times out', async () => {
+    writeContract.mockResolvedValue('0xtx');
+    waitForTransactionReceipt.mockResolvedValue(null);
 
-    const result = await callGetLastTemp('Paris', { retries: 2, retryDelayMs: 1 });
-
-    expect(read).toHaveBeenCalledTimes(2);
-    expect(result).toBe(22);
+    await expect(callFetchTemp('0xuser', 'Paris')).rejects.toThrow('did not finalize');
   });
 
-  it('throws clear error when sdk is unavailable', async () => {
-    (window as Window & { genlayer?: unknown }).genlayer = undefined;
+  it('reads get_last_temp and returns number', async () => {
+    readContract.mockResolvedValue(17);
 
-    await expect(callFetchTemp('Berlin')).rejects.toThrow('GenLayer SDK not found');
+    const value = await callGetLastTemp('0xuser', 'Paris');
+
+    expect(readContract).toHaveBeenCalled();
+    expect(value).toBe(17);
   });
 });

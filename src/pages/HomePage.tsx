@@ -12,6 +12,7 @@ export const HomePage = () => {
     canInteract,
     isConnected: wallet.isConnected,
     isCorrectNetwork: wallet.isCorrectNetwork,
+    address: wallet.address,
   });
 
   return (

@@ -17,7 +17,9 @@ describe('useWeatherOracle', () => {
   });
 
   it('blocks when wallet is disconnected', async () => {
-    const { result } = renderHook(() => useWeatherOracle({ canInteract: false, isConnected: false, isCorrectNetwork: false }));
+    const { result } = renderHook(() =>
+      useWeatherOracle({ canInteract: false, isConnected: false, isCorrectNetwork: false, address: null }),
+    );
 
     await act(async () => {
       await result.current.fetchWeather();
@@ -31,15 +33,17 @@ describe('useWeatherOracle', () => {
     fetchMock.mockResolvedValue({ txHash: '0x123' });
     getMock.mockResolvedValue(28);
 
-    const { result } = renderHook(() => useWeatherOracle({ canInteract: true, isConnected: true, isCorrectNetwork: true }));
+    const { result } = renderHook(() =>
+      useWeatherOracle({ canInteract: true, isConnected: true, isCorrectNetwork: true, address: '0xabc' }),
+    );
 
     act(() => result.current.setCity('Lagos'));
     await act(async () => {
       await result.current.fetchWeather();
     });
 
-    expect(fetchMock).toHaveBeenCalledWith('Lagos');
-    expect(getMock).toHaveBeenCalledWith('Lagos');
+    expect(fetchMock).toHaveBeenCalledWith('0xabc', 'Lagos');
+    expect(getMock).toHaveBeenCalledWith('0xabc', 'Lagos');
     expect(result.current.status).toBe('success');
     expect(result.current.temperature).toBe(28);
   });
@@ -48,7 +52,9 @@ describe('useWeatherOracle', () => {
     fetchMock.mockResolvedValue({ txHash: '0x123' });
     getMock.mockResolvedValue(-999);
 
-    const { result } = renderHook(() => useWeatherOracle({ canInteract: true, isConnected: true, isCorrectNetwork: true }));
+    const { result } = renderHook(() =>
+      useWeatherOracle({ canInteract: true, isConnected: true, isCorrectNetwork: true, address: '0xabc' }),
+    );
 
     act(() => result.current.setCity('invalid-city'));
     await act(async () => {

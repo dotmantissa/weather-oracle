@@ -12,8 +12,3 @@ export type WalletState = {
 export type FetchResult = {
   txHash: string;
 };
-
-export type ContractCallOptions = {
-  retries?: number;
-  retryDelayMs?: number;
-};
